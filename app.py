@@ -69,12 +69,17 @@ st.markdown("**Combining Semantic Search + Keyword Search with Pinecone**")
 with st.sidebar:
     st.header("⚙️ Configuration")
     
-    # API Key input
-    pinecone_api_key = st.text_input(
-        "Pinecone API Key",
-        type="password",
-        help="Enter your Pinecone API key from https://app.pinecone.io"
-    )
+    # Get API key from secrets
+    try:
+        pinecone_api_key = st.secrets.get("PINECONE_API_KEY", None)
+        if pinecone_api_key:
+            st.success("✅ Pinecone API key loaded from secrets")
+        else:
+            st.error("❌ Pinecone API key not found in secrets")
+            st.info("Please add PINECONE_API_KEY to your Streamlit secrets")
+    except Exception as e:
+        st.error("❌ Error loading secrets")
+        pinecone_api_key = None
     
     # Index configuration
     st.subheader("Index Settings")
@@ -105,7 +110,8 @@ with st.sidebar:
     # Initialize button
     if st.button("🚀 Initialize System", type="primary"):
         if not pinecone_api_key:
-            st.error("Please enter Pinecone API key")
+            st.error("❌ Pinecone API key not found in secrets. Please add it in Streamlit Cloud settings.")
+            st.info("Go to: App Dashboard → Settings → Secrets → Add PINECONE_API_KEY")
         else:
             with st.spinner("Initializing Pinecone and embeddings..."):
                 try:
@@ -141,6 +147,11 @@ with st.sidebar:
                     
                     # Initialize BM25 encoder
                     bm25_encoder = BM25Encoder()
+                    
+                    # Fit BM25 on a default corpus (required before use)
+                    # This will be updated when documents are added
+                    default_corpus = ["initialization document"]
+                    bm25_encoder.fit(default_corpus)
                     
                     # Initialize retriever
                     retriever = PineconeHybridSearchRetriever(
@@ -186,17 +197,35 @@ with st.sidebar:
 
 # Main content area
 if not st.session_state.initialized:
-    st.warning("⚠️ Please configure and initialize the system in the sidebar first")
+    st.warning("⚠️ Please initialize the system using the sidebar")
     
     # Quick start guide
     st.markdown("### 🚀 Quick Start Guide")
     st.markdown("""
-    1. Get your Pinecone API key from [app.pinecone.io](https://app.pinecone.io)
-    2. Enter the API key in the sidebar
-    3. Configure index settings (use defaults for demo)
-    4. Click "Initialize System"
-    5. Add documents and start searching!
+    1. Make sure your Pinecone API key is configured in Streamlit secrets
+    2. Click "Initialize System" in the sidebar
+    3. Add documents using the tabs below
+    4. Start searching!
     """)
+    
+    # Configuration help
+    with st.expander("⚙️ How to Configure Secrets"):
+        st.markdown("""
+        **In Streamlit Cloud:**
+        1. Go to your app dashboard
+        2. Click "Settings" → "Secrets"
+        3. Add:
+        ```toml
+        PINECONE_API_KEY = "your-api-key-here"
+        ```
+        4. Click "Save"
+        5. App will restart automatically
+        
+        **For Local Development:**
+        1. Create `.streamlit/secrets.toml`
+        2. Add the same content as above
+        3. This file is gitignored for security
+        """)
     
     # Example usage
     with st.expander("📖 Example Documents"):
@@ -263,6 +292,10 @@ else:
                             'metadata': doc_metadata if doc_metadata else '{}'
                         })
                         
+                        # Refit BM25 encoder with all documents
+                        all_texts = [doc['text'] for doc in st.session_state.documents]
+                        st.session_state.retriever.sparse_encoder.fit(all_texts)
+                        
                         st.success(f"✅ Document added! Total documents: {len(st.session_state.documents)}")
                         time.sleep(1)
                         st.rerun()
@@ -294,6 +327,10 @@ else:
                                 'metadata': '{}'
                             })
                         
+                        # Refit BM25 encoder with all documents
+                        all_texts = [doc['text'] for doc in st.session_state.documents]
+                        st.session_state.retriever.sparse_encoder.fit(all_texts)
+                        
                         st.success(f"✅ Added {len(docs)} documents! Total: {len(st.session_state.documents)}")
                         time.sleep(1)
                         st.rerun()
@@ -322,6 +359,10 @@ else:
                                 'text': doc,
                                 'metadata': f'{{"source": "{uploaded_file.name}"}}'
                             })
+                        
+                        # Refit BM25 encoder with all documents
+                        all_texts = [doc['text'] for doc in st.session_state.documents]
+                        st.session_state.retriever.sparse_encoder.fit(all_texts)
                         
                         st.success(f"✅ Added {len(docs)} documents from file!")
                         time.sleep(1)
@@ -352,6 +393,10 @@ else:
                         'text': doc,
                         'metadata': '{"source": "sample"}'
                     })
+                
+                # Refit BM25 encoder with all documents
+                all_texts = [doc['text'] for doc in st.session_state.documents]
+                st.session_state.retriever.sparse_encoder.fit(all_texts)
                 
                 st.success(f"✅ Added {len(sample_docs)} sample documents!")
                 time.sleep(1)
