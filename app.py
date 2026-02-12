@@ -14,7 +14,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS for a clean UI
 st.markdown("""
     <style>
     .main { padding: 2rem; }
@@ -22,12 +21,13 @@ st.markdown("""
     .search-result { 
         padding: 1.5rem; 
         border-radius: 10px; 
-        background-color: #f8f9fa; 
+        background-color: #ffffff; 
         border-left: 5px solid #4CAF50; 
         margin-bottom: 1.2rem;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        color: #1f1f1f !important;
     }
-    .status-box { padding: 1rem; border-radius: 5px; margin-bottom: 1rem; }
+    .search-result strong { color: #2e7d32 !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -41,14 +41,12 @@ if 'initialized' not in st.session_state:
 with st.sidebar:
     st.header("⚙️ System Setup")
     
-    # API Key Handling
     pinecone_api_key = st.secrets.get("PINECONE_API_KEY", "")
     
     if pinecone_api_key:
         st.success("✅ API Key Detected")
     else:
         st.error("❌ Missing PINECONE_API_KEY in Secrets")
-        st.info("Add it to .streamlit/secrets.toml or Streamlit Cloud Secrets.")
 
     index_name = st.text_input("Pinecone Index Name", value="hybrid-rag-demo")
     
@@ -56,32 +54,27 @@ with st.sidebar:
         if not pinecone_api_key:
             st.error("Cannot initialize without API Key.")
         else:
-            with st.spinner("Waking up the vectors..."):
+            with st.spinner("Initializing Pinecone and Encoders..."):
                 try:
-                    # 1. Initialize Pinecone
                     pc = Pinecone(api_key=pinecone_api_key)
                     
-                    # 2. Create Index if needed (Dot Product is mandatory for Hybrid)
+                    # Ensure Dot Product for Hybrid Search
                     existing_indexes = [idx.name for idx in pc.list_indexes()]
                     if index_name not in existing_indexes:
                         pc.create_index(
                             name=index_name,
-                            dimension=384, # Dimensions for all-MiniLM-L6-v2
+                            dimension=384, 
                             metric="dotproduct",
                             spec=ServerlessSpec(cloud="aws", region="us-east-1")
                         )
-                        time.sleep(5) # Wait for cloud propagation
+                        time.sleep(5)
                     
                     index = pc.Index(index_name)
-                    
-                    # 3. Dense Embeddings (HuggingFace)
                     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
                     
-                    # 4. Sparse Encoder (BM25)
-                    # We start with a default state to avoid immediate errors
+                    # Initialize BM25 with a default to prevent empty vector errors
                     bm25_encoder = BM25Encoder().default()
                     
-                    # 5. Hybrid Retriever Initialization
                     retriever = PineconeHybridSearchRetriever(
                         embeddings=embeddings,
                         sparse_encoder=bm25_encoder,
@@ -95,23 +88,24 @@ with st.sidebar:
                 except Exception as e:
                     st.error(f"Initialization Failed: {e}")
 
-# --- Main Application Logic ---
+# --- Main Application UI ---
 st.title("🔍 Hybrid Search RAG Engine")
 st.markdown("---")
 
 if not st.session_state.initialized:
-    st.warning("⚠️ Action Required: Please initialize the engine from the sidebar to start indexing data.")
+    st.warning("⚠️ Please initialize the engine from the sidebar to start.")
     
     col1, col2 = st.columns(2)
     with col1:
         st.info("""
         **What is Hybrid Search?**
-        It combines **Semantic Search** (understanding meaning) with **Keyword Search** (exact word matching) to give the most accurate results possible.
+        It combines **Semantic Search** (meaning) with **Keyword Search** (exact matching).
         """)
     with col2:
-        # Adding a placeholder or 'pass' to fix the IndentationError
+        # FIXED: Added content here to resolve IndentationError at line 111
         st.markdown("### 🏗️ Architecture")
-        st.write("Hybrid RAG uses Dense Vectors for context and Sparse Vectors for keywords.")
+        st.write("Using Reciprocal Rank Fusion to merge Dense and Sparse results.")
+        
 
 else:
     tab1, tab2 = st.tabs(["📄 Document Management", "🔎 Search Interface"])
@@ -120,96 +114,54 @@ else:
     with tab1:
         st.header("Add Data to Index")
         
-        # Option A: Manual Entry
-        with st.expander("✍️ Add Single Document", expanded=True):
-            user_text = st.text_area("Content:", placeholder="Paste text you want to index...")
+        with st.expander("✍️ Add Single Document (Resume, Text, etc.)", expanded=True):
+            user_text = st.text_area("Content:", height=300)
             if st.button("Index Document"):
                 if user_text:
-                    with st.spinner("Updating BM25 vocabulary and uploading..."):
-                        # Add to local tracking
+                    with st.spinner("Updating BM25 and Indexing..."):
+                        # Refit BM25 on the updated collection to avoid 'at least one value' error
                         st.session_state.documents.append(user_text)
-                        # Re-fit BM25 on the entire updated corpus
                         st.session_state.bm25_encoder.fit(st.session_state.documents)
-                        # Sync retriever with the new encoder state
                         st.session_state.retriever.sparse_encoder = st.session_state.bm25_encoder
-                        # Upload to Pinecone
+                        
                         st.session_state.retriever.add_texts([user_text])
                         st.success("Document added!")
                         time.sleep(1)
                         st.rerun()
 
-        # Option B: Bulk Samples
-        st.markdown("---")
-        st.subheader("Bulk Operations")
         if st.button("📚 Load Sample Knowledge Base"):
-            samples = [
-                "The James Webb Space Telescope is the most powerful telescope ever built.",
-                "Photosynthesis is the process used by plants to convert light into energy.",
-                "Python is a high-level, interpreted programming language known for readability.",
-                "Quantum computing uses qubits to perform complex calculations faster than classical PCs.",
-                "The Great Barrier Reef is the world's largest coral reef system."
-            ]
-            with st.spinner("Bulk indexing samples..."):
-                # Avoid duplicates in local list
-                for s in samples:
-                    if s not in st.session_state.documents:
-                        st.session_state.documents.append(s)
-                
-                # Fit and Sync
-                st.session_state.bm25_encoder.fit(st.session_state.documents)
-                st.session_state.retriever.sparse_encoder = st.session_state.bm25_encoder
-                # Upload
-                st.session_state.retriever.add_texts(samples)
-                st.success(f"Successfully indexed {len(samples)} sample docs!")
-                time.sleep(1)
-                st.rerun()
-
-        # Display Current Stats
-        st.markdown("---")
-        st.metric("Documents in local context", len(st.session_state.documents))
-        if st.button("🗑️ Clear Local Document History"):
-            st.session_state.documents = []
+            samples = ["Python programming for data science.", "AI in autonomous vehicles."]
+            for s in samples:
+                if s not in st.session_state.documents:
+                    st.session_state.documents.append(s)
+            st.session_state.bm25_encoder.fit(st.session_state.documents)
+            st.session_state.retriever.sparse_encoder = st.session_state.bm25_encoder
+            st.session_state.retriever.add_texts(samples)
             st.rerun()
 
     # --- TAB 2: SEARCH ---
     with tab2:
-        st.header("Search the Knowledge Base")
+        st.header("Search Knowledge Base")
+        query = st.text_input("Enter query:")
         
-        query = st.text_input("Enter your query:", placeholder="e.g., 'How do plants make energy?'")
+        # Alpha controls the balance between Keyword (0.0) and Semantic (1.0)
+        alpha = st.slider("Alpha (Keyword vs Semantic)", 0.0, 1.0, 0.5)
         
-        col_a, col_b = st.columns([1, 1])
-        with col_a:
-            alpha = st.slider(
-                "Search Balance (Alpha)", 
-                0.0, 1.0, 0.5, 
-                help="0.0 = Keyword only, 1.0 = Semantic only, 0.5 = Balanced"
-            )
-        with col_b:
-            top_k = st.number_input("Results to return:", min_value=1, max_value=10, value=3)
-
-        if st.button("🔍 Execute Hybrid Search", type="primary"):
-            if query:
-                if len(st.session_state.documents) == 0:
-                    st.error("The index is empty! Please add documents in the first tab.")
-                else:
-                    with st.spinner("Calculating Reciprocal Rank Fusion..."):
-                        # Update retriever settings
-                        st.session_state.retriever.alpha = alpha
-                        
-                        # Search
-                        results = st.session_state.retriever.invoke(query)
-                        
-                        st.subheader(f"Top {len(results)} Matches:")
-                        for i, doc in enumerate(results[:top_k]):
-                            st.markdown(f"""
-                            <div class="search-result">
-                                <strong>Rank #{i+1}</strong><br>
-                                <p style="margin-top:0.5rem;">{doc.page_content}</p>
-                            </div>
-                            """, unsafe_allow_html=True)
+        if st.button("🔍 Execute Search", type="primary"):
+            if query and st.session_state.documents:
+                st.session_state.retriever.alpha = alpha
+                results = st.session_state.retriever.invoke(query)
+                
+                st.subheader(f"Top Matches:")
+                for i, doc in enumerate(results):
+                    st.markdown(f"""
+                    <div class="search-result">
+                        <strong>Rank #{i+1}</strong><br>
+                        <p>{doc.page_content}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
             else:
-                st.warning("Please enter a query first.")
+                st.warning("Please index text first and enter a query.")
 
-# Footer
 st.markdown("---")
-st.caption("Hybrid RAG App | Built with LangChain, Pinecone, and HuggingFace")
+st.caption("Hybrid RAG App | Built with LangChain and Pinecone")
