@@ -145,13 +145,21 @@ with st.sidebar:
                         model_name="sentence-transformers/all-MiniLM-L6-v2"
                     )
                     
-                    # Initialize BM25 encoder
+                    # Initialize BM25 encoder with proper default corpus
                     bm25_encoder = BM25Encoder()
                     
-                    # Fit BM25 on a default corpus (required before use)
-                    # This will be updated when documents are added
-                    default_corpus = ["initialization document"]
+                    # Fit BM25 on a meaningful default corpus to avoid empty vectors
+                    default_corpus = [
+                        "This is a sample document for initialization",
+                        "Machine learning and artificial intelligence",
+                        "Natural language processing and text analysis",
+                        "Python programming and data science",
+                        "Information retrieval and search systems"
+                    ]
                     bm25_encoder.fit(default_corpus)
+                    
+                    # Store BM25 encoder in session state
+                    st.session_state.bm25_encoder = bm25_encoder
                     
                     # Initialize retriever
                     retriever = PineconeHybridSearchRetriever(
@@ -280,27 +288,30 @@ else:
             if st.button("Add Document", type="primary"):
                 if doc_text:
                     try:
-                        # Add document to retriever
-                        st.session_state.retriever.add_texts(
-                            texts=[doc_text],
-                            metadatas=[eval(doc_metadata) if doc_metadata else {}]
-                        )
-                        
-                        # Track documents
+                        # Track document first
                         st.session_state.documents.append({
                             'text': doc_text,
                             'metadata': doc_metadata if doc_metadata else '{}'
                         })
                         
-                        # Refit BM25 encoder with all documents
+                        # Refit BM25 encoder with ALL documents (including new one)
                         all_texts = [doc['text'] for doc in st.session_state.documents]
-                        st.session_state.retriever.sparse_encoder.fit(all_texts)
+                        st.session_state.bm25_encoder.fit(all_texts)
+                        
+                        # Now add to retriever with properly fitted BM25
+                        st.session_state.retriever.add_texts(
+                            texts=[doc_text],
+                            metadatas=[eval(doc_metadata) if doc_metadata else {}]
+                        )
                         
                         st.success(f"✅ Document added! Total documents: {len(st.session_state.documents)}")
                         time.sleep(1)
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error adding document: {str(e)}")
+                        # Remove from documents if add failed
+                        if st.session_state.documents and st.session_state.documents[-1]['text'] == doc_text:
+                            st.session_state.documents.pop()
                 else:
                     st.warning("Please enter document text")
         
@@ -317,19 +328,19 @@ else:
                     try:
                         docs = [line.strip() for line in bulk_docs.split('\n') if line.strip()]
                         
-                        # Add documents
-                        st.session_state.retriever.add_texts(texts=docs)
-                        
-                        # Track documents
+                        # Track documents first
                         for doc in docs:
                             st.session_state.documents.append({
                                 'text': doc,
                                 'metadata': '{}'
                             })
                         
-                        # Refit BM25 encoder with all documents
+                        # Refit BM25 encoder with ALL documents
                         all_texts = [doc['text'] for doc in st.session_state.documents]
-                        st.session_state.retriever.sparse_encoder.fit(all_texts)
+                        st.session_state.bm25_encoder.fit(all_texts)
+                        
+                        # Now add to retriever
+                        st.session_state.retriever.add_texts(texts=docs)
                         
                         st.success(f"✅ Added {len(docs)} documents! Total: {len(st.session_state.documents)}")
                         time.sleep(1)
@@ -386,17 +397,19 @@ else:
             ]
             
             try:
-                st.session_state.retriever.add_texts(texts=sample_docs)
-                
+                # Track documents first
                 for doc in sample_docs:
                     st.session_state.documents.append({
                         'text': doc,
                         'metadata': '{"source": "sample"}'
                     })
                 
-                # Refit BM25 encoder with all documents
+                # Refit BM25 encoder with ALL documents
                 all_texts = [doc['text'] for doc in st.session_state.documents]
-                st.session_state.retriever.sparse_encoder.fit(all_texts)
+                st.session_state.bm25_encoder.fit(all_texts)
+                
+                # Now add to retriever
+                st.session_state.retriever.add_texts(texts=sample_docs)
                 
                 st.success(f"✅ Added {len(sample_docs)} sample documents!")
                 time.sleep(1)
