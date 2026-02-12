@@ -109,7 +109,9 @@ if not st.session_state.initialized:
         It combines **Semantic Search** (understanding meaning) with **Keyword Search** (exact word matching) to give the most accurate results possible.
         """)
     with col2:
-        
+        # Adding a placeholder or 'pass' to fix the IndentationError
+        st.markdown("### 🏗️ Architecture")
+        st.write("Hybrid RAG uses Dense Vectors for context and Sparse Vectors for keywords.")
 
 else:
     tab1, tab2 = st.tabs(["📄 Document Management", "🔎 Search Interface"])
