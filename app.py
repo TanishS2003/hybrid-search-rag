@@ -298,6 +298,9 @@ else:
                         all_texts = [doc['text'] for doc in st.session_state.documents]
                         st.session_state.bm25_encoder.fit(all_texts)
                         
+                        # Update retriever's sparse encoder to use the refitted one
+                        st.session_state.retriever.sparse_encoder = st.session_state.bm25_encoder
+                        
                         # Now add to retriever with properly fitted BM25
                         st.session_state.retriever.add_texts(
                             texts=[doc_text],
@@ -338,6 +341,9 @@ else:
                         # Refit BM25 encoder with ALL documents
                         all_texts = [doc['text'] for doc in st.session_state.documents]
                         st.session_state.bm25_encoder.fit(all_texts)
+                        
+                        # Update retriever's sparse encoder
+                        st.session_state.retriever.sparse_encoder = st.session_state.bm25_encoder
                         
                         # Now add to retriever
                         st.session_state.retriever.add_texts(texts=docs)
@@ -407,6 +413,9 @@ else:
                 # Refit BM25 encoder with ALL documents
                 all_texts = [doc['text'] for doc in st.session_state.documents]
                 st.session_state.bm25_encoder.fit(all_texts)
+                
+                # Update retriever's sparse encoder
+                st.session_state.retriever.sparse_encoder = st.session_state.bm25_encoder
                 
                 # Now add to retriever
                 st.session_state.retriever.add_texts(texts=sample_docs)
