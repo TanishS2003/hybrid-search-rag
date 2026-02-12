@@ -1,167 +1,87 @@
 import streamlit as st
 import os
+import json
+import time
 from pinecone import Pinecone, ServerlessSpec
 from pinecone_text.sparse import BM25Encoder
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_pinecone import PineconeVectorStore
 from langchain_community.retrievers import PineconeHybridSearchRetriever
-from langchain.schema import Document
-import time
 
-# Page configuration
+# --- Page Configuration ---
 st.set_page_config(
-    page_title="Hybrid Search RAG",
-    page_icon="🔍",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="Hybrid Search RAG", 
+    page_icon="🔍", 
+    layout="wide"
 )
 
-# Custom CSS
+# Custom CSS for a clean UI
 st.markdown("""
     <style>
-    .main {
-        padding: 2rem;
+    .main { padding: 2rem; }
+    .stButton>button { width: 100%; border-radius: 5px; height: 3em; font-weight: bold; }
+    .search-result { 
+        padding: 1.5rem; 
+        border-radius: 10px; 
+        background-color: #f8f9fa; 
+        border-left: 5px solid #4CAF50; 
+        margin-bottom: 1.2rem;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     }
-    .stButton>button {
-        width: 100%;
-        background-color: #4CAF50;
-        color: white;
-        font-weight: bold;
-        padding: 0.5rem 1rem;
-        border-radius: 5px;
-    }
-    .stButton>button:hover {
-        background-color: #45a049;
-    }
-    .search-result {
-        padding: 1rem;
-        border-radius: 5px;
-        background-color: #f0f2f6;
-        border-left: 4px solid #4CAF50;
-        margin-bottom: 1rem;
-    }
-    .metric-card {
-        background-color: #ffffff;
-        padding: 1rem;
-        border-radius: 5px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
+    .status-box { padding: 1rem; border-radius: 5px; margin-bottom: 1rem; }
     </style>
     """, unsafe_allow_html=True)
 
-# Initialize session state
-if 'pinecone_client' not in st.session_state:
-    st.session_state.pinecone_client = None
-if 'index' not in st.session_state:
-    st.session_state.index = None
-if 'retriever' not in st.session_state:
-    st.session_state.retriever = None
+# --- Session State Initialization ---
 if 'documents' not in st.session_state:
     st.session_state.documents = []
 if 'initialized' not in st.session_state:
     st.session_state.initialized = False
 
-# Title
-st.title("🔍 Hybrid Search RAG Application")
-st.markdown("**Combining Semantic Search + Keyword Search with Pinecone**")
-
-# Sidebar
+# --- Sidebar Configuration ---
 with st.sidebar:
-    st.header("⚙️ Configuration")
+    st.header("⚙️ System Setup")
     
-    # Get API key from secrets
-    try:
-        pinecone_api_key = st.secrets.get("PINECONE_API_KEY", None)
-        if pinecone_api_key:
-            st.success("✅ Pinecone API key loaded from secrets")
-        else:
-            st.error("❌ Pinecone API key not found in secrets")
-            st.info("Please add PINECONE_API_KEY to your Streamlit secrets")
-    except Exception as e:
-        st.error("❌ Error loading secrets")
-        pinecone_api_key = None
+    # API Key Handling
+    pinecone_api_key = st.secrets.get("PINECONE_API_KEY", "")
     
-    # Index configuration
-    st.subheader("Index Settings")
-    index_name = st.text_input(
-        "Index Name",
-        value="hybrid-search-demo",
-        help="Name for your Pinecone index"
-    )
+    if pinecone_api_key:
+        st.success("✅ API Key Detected")
+    else:
+        st.error("❌ Missing PINECONE_API_KEY in Secrets")
+        st.info("Add it to .streamlit/secrets.toml or Streamlit Cloud Secrets.")
+
+    index_name = st.text_input("Pinecone Index Name", value="hybrid-rag-demo")
     
-    dimension = st.number_input(
-        "Embedding Dimension",
-        value=384,
-        help="Dimension of embeddings (384 for all-MiniLM-L6-v2)"
-    )
-    
-    metric = st.selectbox(
-        "Distance Metric",
-        ["dotproduct", "cosine", "euclidean"],
-        index=0,
-        help="dotproduct is required for hybrid search with sparse vectors"
-    )
-    
-    cloud = st.selectbox("Cloud Provider", ["aws"], index=0)
-    region = st.selectbox("Region", ["us-east-1"], index=0)
-    
-    st.markdown("---")
-    
-    # Initialize button
-    if st.button("🚀 Initialize System", type="primary"):
+    if st.button("🚀 Initialize Hybrid Engine", type="primary"):
         if not pinecone_api_key:
-            st.error("❌ Pinecone API key not found in secrets. Please add it in Streamlit Cloud settings.")
-            st.info("Go to: App Dashboard → Settings → Secrets → Add PINECONE_API_KEY")
+            st.error("Cannot initialize without API Key.")
         else:
-            with st.spinner("Initializing Pinecone and embeddings..."):
+            with st.spinner("Waking up the vectors..."):
                 try:
-                    # Initialize Pinecone
+                    # 1. Initialize Pinecone
                     pc = Pinecone(api_key=pinecone_api_key)
-                    st.session_state.pinecone_client = pc
                     
-                    # Create or connect to index
-                    existing_indexes = [index.name for index in pc.list_indexes()]
-                    
+                    # 2. Create Index if needed (Dot Product is mandatory for Hybrid)
+                    existing_indexes = [idx.name for idx in pc.list_indexes()]
                     if index_name not in existing_indexes:
-                        st.info(f"Creating new index: {index_name}")
                         pc.create_index(
                             name=index_name,
-                            dimension=dimension,
-                            metric=metric,
-                            spec=ServerlessSpec(
-                                cloud=cloud,
-                                region=region
-                            )
+                            dimension=384, # Dimensions for all-MiniLM-L6-v2
+                            metric="dotproduct",
+                            spec=ServerlessSpec(cloud="aws", region="us-east-1")
                         )
-                        # Wait for index to be ready
-                        time.sleep(5)
+                        time.sleep(5) # Wait for cloud propagation
                     
-                    # Connect to index
                     index = pc.Index(index_name)
-                    st.session_state.index = index
                     
-                    # Initialize embeddings
-                    embeddings = HuggingFaceEmbeddings(
-                        model_name="sentence-transformers/all-MiniLM-L6-v2"
-                    )
+                    # 3. Dense Embeddings (HuggingFace)
+                    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
                     
-                    # Initialize BM25 encoder with proper default corpus
-                    bm25_encoder = BM25Encoder()
+                    # 4. Sparse Encoder (BM25)
+                    # We start with a default state to avoid immediate errors
+                    bm25_encoder = BM25Encoder().default()
                     
-                    # Fit BM25 on a meaningful default corpus to avoid empty vectors
-                    default_corpus = [
-                        "This is a sample document for initialization",
-                        "Machine learning and artificial intelligence",
-                        "Natural language processing and text analysis",
-                        "Python programming and data science",
-                        "Information retrieval and search systems"
-                    ]
-                    bm25_encoder.fit(default_corpus)
-                    
-                    # Store BM25 encoder in session state
-                    st.session_state.bm25_encoder = bm25_encoder
-                    
-                    # Initialize retriever
+                    # 5. Hybrid Retriever Initialization
                     retriever = PineconeHybridSearchRetriever(
                         embeddings=embeddings,
                         sparse_encoder=bm25_encoder,
@@ -169,368 +89,125 @@ with st.sidebar:
                     )
                     
                     st.session_state.retriever = retriever
+                    st.session_state.bm25_encoder = bm25_encoder
                     st.session_state.initialized = True
-                    
-                    st.success("✅ System initialized successfully!")
-                    
+                    st.success("Engine Online!")
                 except Exception as e:
-                    st.error(f"Error initializing system: {str(e)}")
-    
-    st.markdown("---")
-    
-    # Info section
-    st.header("ℹ️ About Hybrid Search")
-    st.info("""
-    **Hybrid Search** combines:
-    
-    1️⃣ **Semantic Search** (Dense Vectors)
-    - Uses embeddings to find similar meanings
-    - Powered by HuggingFace transformers
-    
-    2️⃣ **Keyword Search** (Sparse Vectors)
-    - Uses BM25 for exact keyword matches
-    - Better for specific terms
-    
-    3️⃣ **Reciprocal Rank Fusion (RRF)**
-    - Combines both results
-    - Optimizes final ranking
-    """)
-    
-    st.header("📊 System Status")
-    if st.session_state.initialized:
-        st.success("🟢 System Ready")
-        st.metric("Documents Indexed", len(st.session_state.documents))
-    else:
-        st.warning("🟡 Not Initialized")
+                    st.error(f"Initialization Failed: {e}")
 
-# Main content area
+# --- Main Application Logic ---
+st.title("🔍 Hybrid Search RAG Engine")
+st.markdown("---")
+
 if not st.session_state.initialized:
-    st.warning("⚠️ Please initialize the system using the sidebar")
+    st.warning("⚠️ Action Required: Please initialize the engine from the sidebar to start indexing data.")
     
-    # Quick start guide
-    st.markdown("### 🚀 Quick Start Guide")
-    st.markdown("""
-    1. Make sure your Pinecone API key is configured in Streamlit secrets
-    2. Click "Initialize System" in the sidebar
-    3. Add documents using the tabs below
-    4. Start searching!
-    """)
-    
-    # Configuration help
-    with st.expander("⚙️ How to Configure Secrets"):
-        st.markdown("""
-        **In Streamlit Cloud:**
-        1. Go to your app dashboard
-        2. Click "Settings" → "Secrets"
-        3. Add:
-        ```toml
-        PINECONE_API_KEY = "your-api-key-here"
-        ```
-        4. Click "Save"
-        5. App will restart automatically
+    col1, col2 = st.columns(2)
+    with col1:
+        st.info("""
+        **What is Hybrid Search?**
+        It combines **Semantic Search** (understanding meaning) with **Keyword Search** (exact word matching) to give the most accurate results possible.
+        """)
+    with col2:
         
-        **For Local Development:**
-        1. Create `.streamlit/secrets.toml`
-        2. Add the same content as above
-        3. This file is gitignored for security
-        """)
-    
-    # Example usage
-    with st.expander("📖 Example Documents"):
-        st.code("""
-# Sample documents you can add:
-- "In 2023 I visited Paris and saw the Eiffel Tower"
-- "Machine learning is a subset of artificial intelligence"
-- "Python is a popular programming language for data science"
-- "The quick brown fox jumps over the lazy dog"
-- "Climate change is affecting global weather patterns"
-        """)
-    
-    with st.expander("🔍 Example Queries"):
-        st.code("""
-# Try these queries after adding documents:
-- "Paris travel" (will match keyword and semantic meaning)
-- "AI and ML" (will find machine learning content)
-- "programming" (will find Python-related content)
-- "2023 trip" (will find travel content with date)
-        """)
 
 else:
-    # Document management
-    st.header("📄 Document Management")
-    
-    tab1, tab2, tab3 = st.tabs(["➕ Add Documents", "🔍 Search", "📋 View Documents"])
-    
+    tab1, tab2 = st.tabs(["📄 Document Management", "🔎 Search Interface"])
+
+    # --- TAB 1: DATA INGESTION ---
     with tab1:
-        st.subheader("Add Documents to Index")
+        st.header("Add Data to Index")
         
-        col1, col2 = st.columns([3, 1])
-        
-        with col1:
-            doc_input_method = st.radio(
-                "Input Method",
-                ["Single Document", "Multiple Documents", "Upload Text File"],
-                horizontal=True
-            )
-        
-        if doc_input_method == "Single Document":
-            doc_text = st.text_area(
-                "Document Content",
-                placeholder="Enter your document text here...",
-                height=150
-            )
-            
-            doc_metadata = st.text_input(
-                "Metadata (optional)",
-                placeholder='{"source": "manual", "category": "example"}'
-            )
-            
-            if st.button("Add Document", type="primary"):
-                if doc_text:
-                    try:
-                        # Track document first
-                        st.session_state.documents.append({
-                            'text': doc_text,
-                            'metadata': doc_metadata if doc_metadata else '{}'
-                        })
-                        
-                        # Refit BM25 encoder with ALL documents (including new one)
-                        all_texts = [doc['text'] for doc in st.session_state.documents]
-                        st.session_state.bm25_encoder.fit(all_texts)
-                        
-                        # Update retriever's sparse encoder to use the refitted one
+        # Option A: Manual Entry
+        with st.expander("✍️ Add Single Document", expanded=True):
+            user_text = st.text_area("Content:", placeholder="Paste text you want to index...")
+            if st.button("Index Document"):
+                if user_text:
+                    with st.spinner("Updating BM25 vocabulary and uploading..."):
+                        # Add to local tracking
+                        st.session_state.documents.append(user_text)
+                        # Re-fit BM25 on the entire updated corpus
+                        st.session_state.bm25_encoder.fit(st.session_state.documents)
+                        # Sync retriever with the new encoder state
                         st.session_state.retriever.sparse_encoder = st.session_state.bm25_encoder
-                        
-                        # Now add to retriever with properly fitted BM25
-                        st.session_state.retriever.add_texts(
-                            texts=[doc_text],
-                            metadatas=[eval(doc_metadata) if doc_metadata else {}]
-                        )
-                        
-                        st.success(f"✅ Document added! Total documents: {len(st.session_state.documents)}")
+                        # Upload to Pinecone
+                        st.session_state.retriever.add_texts([user_text])
+                        st.success("Document added!")
                         time.sleep(1)
                         st.rerun()
-                    except Exception as e:
-                        st.error(f"Error adding document: {str(e)}")
-                        # Remove from documents if add failed
-                        if st.session_state.documents and st.session_state.documents[-1]['text'] == doc_text:
-                            st.session_state.documents.pop()
-                else:
-                    st.warning("Please enter document text")
-        
-        elif doc_input_method == "Multiple Documents":
-            st.info("Enter one document per line")
-            bulk_docs = st.text_area(
-                "Documents (one per line)",
-                placeholder="In 2023 I visited Paris\nMachine learning is amazing\nPython is great for AI",
-                height=200
-            )
-            
-            if st.button("Add All Documents", type="primary"):
-                if bulk_docs:
-                    try:
-                        docs = [line.strip() for line in bulk_docs.split('\n') if line.strip()]
-                        
-                        # Track documents first
-                        for doc in docs:
-                            st.session_state.documents.append({
-                                'text': doc,
-                                'metadata': '{}'
-                            })
-                        
-                        # Refit BM25 encoder with ALL documents
-                        all_texts = [doc['text'] for doc in st.session_state.documents]
-                        st.session_state.bm25_encoder.fit(all_texts)
-                        
-                        # Update retriever's sparse encoder
-                        st.session_state.retriever.sparse_encoder = st.session_state.bm25_encoder
-                        
-                        # Now add to retriever
-                        st.session_state.retriever.add_texts(texts=docs)
-                        
-                        st.success(f"✅ Added {len(docs)} documents! Total: {len(st.session_state.documents)}")
-                        time.sleep(1)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error adding documents: {str(e)}")
-                else:
-                    st.warning("Please enter documents")
-        
-        else:  # Upload Text File
-            uploaded_file = st.file_uploader("Upload Text File", type=['txt'])
-            
-            if uploaded_file:
-                content = uploaded_file.read().decode('utf-8')
-                st.text_area("File Preview", content, height=200, disabled=True)
-                
-                if st.button("Add from File", type="primary"):
-                    try:
-                        docs = [line.strip() for line in content.split('\n') if line.strip()]
-                        
-                        # Add documents
-                        st.session_state.retriever.add_texts(texts=docs)
-                        
-                        # Track documents
-                        for doc in docs:
-                            st.session_state.documents.append({
-                                'text': doc,
-                                'metadata': f'{{"source": "{uploaded_file.name}"}}'
-                            })
-                        
-                        # Refit BM25 encoder with all documents
-                        all_texts = [doc['text'] for doc in st.session_state.documents]
-                        st.session_state.retriever.sparse_encoder.fit(all_texts)
-                        
-                        st.success(f"✅ Added {len(docs)} documents from file!")
-                        time.sleep(1)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error: {str(e)}")
-        
-        # Quick add sample documents
+
+        # Option B: Bulk Samples
         st.markdown("---")
-        st.subheader("📚 Quick Sample Documents")
-        if st.button("Add Sample Documents"):
-            sample_docs = [
-                "In 2023 I visited Paris and saw the Eiffel Tower",
-                "Machine learning is a subset of artificial intelligence that focuses on data-driven algorithms",
-                "Python is a popular programming language widely used in data science and AI",
-                "The quick brown fox jumps over the lazy dog",
-                "Climate change is affecting global weather patterns and ecosystems",
-                "Natural language processing enables computers to understand human language",
-                "Deep learning uses neural networks with multiple layers",
-                "Paris is the capital city of France, known for its art, culture, and cuisine"
+        st.subheader("Bulk Operations")
+        if st.button("📚 Load Sample Knowledge Base"):
+            samples = [
+                "The James Webb Space Telescope is the most powerful telescope ever built.",
+                "Photosynthesis is the process used by plants to convert light into energy.",
+                "Python is a high-level, interpreted programming language known for readability.",
+                "Quantum computing uses qubits to perform complex calculations faster than classical PCs.",
+                "The Great Barrier Reef is the world's largest coral reef system."
             ]
-            
-            try:
-                # Track documents first
-                for doc in sample_docs:
-                    st.session_state.documents.append({
-                        'text': doc,
-                        'metadata': '{"source": "sample"}'
-                    })
+            with st.spinner("Bulk indexing samples..."):
+                # Avoid duplicates in local list
+                for s in samples:
+                    if s not in st.session_state.documents:
+                        st.session_state.documents.append(s)
                 
-                # Refit BM25 encoder with ALL documents
-                all_texts = [doc['text'] for doc in st.session_state.documents]
-                st.session_state.bm25_encoder.fit(all_texts)
-                
-                # Update retriever's sparse encoder
+                # Fit and Sync
+                st.session_state.bm25_encoder.fit(st.session_state.documents)
                 st.session_state.retriever.sparse_encoder = st.session_state.bm25_encoder
-                
-                # Now add to retriever
-                st.session_state.retriever.add_texts(texts=sample_docs)
-                
-                st.success(f"✅ Added {len(sample_docs)} sample documents!")
+                # Upload
+                st.session_state.retriever.add_texts(samples)
+                st.success(f"Successfully indexed {len(samples)} sample docs!")
                 time.sleep(1)
                 st.rerun()
-            except Exception as e:
-                st.error(f"Error: {str(e)}")
-    
+
+        # Display Current Stats
+        st.markdown("---")
+        st.metric("Documents in local context", len(st.session_state.documents))
+        if st.button("🗑️ Clear Local Document History"):
+            st.session_state.documents = []
+            st.rerun()
+
+    # --- TAB 2: SEARCH ---
     with tab2:
-        st.subheader("🔍 Hybrid Search Query")
+        st.header("Search the Knowledge Base")
         
-        if len(st.session_state.documents) == 0:
-            st.info("Add some documents first to test search functionality")
-        else:
-            query = st.text_input(
-                "Search Query",
-                placeholder="Enter your search query...",
-                help="Try: 'Paris travel', 'AI and ML', 'programming', etc."
+        query = st.text_input("Enter your query:", placeholder="e.g., 'How do plants make energy?'")
+        
+        col_a, col_b = st.columns([1, 1])
+        with col_a:
+            alpha = st.slider(
+                "Search Balance (Alpha)", 
+                0.0, 1.0, 0.5, 
+                help="0.0 = Keyword only, 1.0 = Semantic only, 0.5 = Balanced"
             )
-            
-            k = st.slider("Number of Results", min_value=1, max_value=10, value=3)
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                alpha = st.slider(
-                    "Hybrid Weight (α)",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=0.5,
-                    step=0.1,
-                    help="0 = keyword only, 1 = semantic only, 0.5 = balanced"
-                )
-            
-            if st.button("🔍 Search", type="primary"):
-                if query:
-                    try:
-                        with st.spinner("Searching..."):
-                            # Perform hybrid search
-                            results = st.session_state.retriever.invoke(
-                                query,
-                                search_kwargs={'k': k}
-                            )
-                            
-                            st.success(f"Found {len(results)} results")
-                            
-                            # Display results
-                            st.markdown("### 📊 Search Results")
-                            for i, doc in enumerate(results, 1):
-                                st.markdown(f"""
-                                <div class="search-result">
-                                    <strong>Result {i}</strong><br>
-                                    <p>{doc.page_content}</p>
-                                    <small>Metadata: {doc.metadata}</small>
-                                </div>
-                                """, unsafe_allow_html=True)
-                    except Exception as e:
-                        st.error(f"Search error: {str(e)}")
+        with col_b:
+            top_k = st.number_input("Results to return:", min_value=1, max_value=10, value=3)
+
+        if st.button("🔍 Execute Hybrid Search", type="primary"):
+            if query:
+                if len(st.session_state.documents) == 0:
+                    st.error("The index is empty! Please add documents in the first tab.")
                 else:
-                    st.warning("Please enter a search query")
-            
-            # Search examples
-            st.markdown("---")
-            st.markdown("#### 💡 Try These Example Queries:")
-            example_queries = [
-                "Paris travel 2023",
-                "machine learning AI",
-                "Python programming",
-                "climate change weather",
-                "natural language"
-            ]
-            
-            cols = st.columns(len(example_queries))
-            for idx, example in enumerate(example_queries):
-                with cols[idx]:
-                    if st.button(f"🔍 {example}", key=f"ex_{idx}"):
-                        st.session_state.example_query = example
-                        st.rerun()
-    
-    with tab3:
-        st.subheader("📋 Indexed Documents")
-        
-        if len(st.session_state.documents) == 0:
-            st.info("No documents indexed yet")
-        else:
-            st.metric("Total Documents", len(st.session_state.documents))
-            
-            # Display documents
-            for i, doc in enumerate(st.session_state.documents, 1):
-                with st.expander(f"Document {i}: {doc['text'][:50]}..."):
-                    st.write("**Content:**")
-                    st.write(doc['text'])
-                    st.write("**Metadata:**")
-                    st.code(doc['metadata'])
-            
-            # Clear all documents
-            st.markdown("---")
-            if st.button("🗑️ Clear All Documents", type="secondary"):
-                if st.session_state.index:
-                    try:
-                        # Delete all vectors from index
-                        st.session_state.index.delete(delete_all=True)
-                        st.session_state.documents = []
-                        st.success("All documents cleared!")
-                        time.sleep(1)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error clearing documents: {str(e)}")
+                    with st.spinner("Calculating Reciprocal Rank Fusion..."):
+                        # Update retriever settings
+                        st.session_state.retriever.alpha = alpha
+                        
+                        # Search
+                        results = st.session_state.retriever.invoke(query)
+                        
+                        st.subheader(f"Top {len(results)} Matches:")
+                        for i, doc in enumerate(results[:top_k]):
+                            st.markdown(f"""
+                            <div class="search-result">
+                                <strong>Rank #{i+1}</strong><br>
+                                <p style="margin-top:0.5rem;">{doc.page_content}</p>
+                            </div>
+                            """, unsafe_allow_html=True)
+            else:
+                st.warning("Please enter a query first.")
 
 # Footer
 st.markdown("---")
-st.markdown("""
-    <div style='text-align: center'>
-        <p>🔍 Hybrid Search RAG | Powered by Pinecone + LangChain + HuggingFace</p>
-        <p><small>Combining Semantic Search (Dense Vectors) + Keyword Search (Sparse Vectors)</small></p>
-    </div>
-    """, unsafe_allow_html=True)
+st.caption("Hybrid RAG App | Built with LangChain, Pinecone, and HuggingFace")
