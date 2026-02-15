@@ -77,13 +77,19 @@ with st.sidebar:
         # CRITICAL: Clear index button
         if st.button("🗑️ Clear All Data", type="secondary"):
             try:
-                # Delete all vectors from Pinecone
-                st.session_state.index.delete(delete_all=True)
+                # Check if index exists in session state
+                if 'index' in st.session_state and st.session_state.index:
+                    # Delete all vectors from Pinecone
+                    st.session_state.index.delete(delete_all=True)
+                    st.success("✅ Pinecone data cleared!")
+                
                 # Clear local documents
                 st.session_state.documents = []
-                # Refit BM25 on empty
+                
+                # Refit BM25 on minimal corpus
                 st.session_state.bm25_encoder.fit(["Initialize system", "Setup complete"])
                 st.session_state.retriever.sparse_encoder = st.session_state.bm25_encoder
+                
                 st.success("✅ All data cleared!")
                 time.sleep(1)
                 st.rerun()
